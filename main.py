@@ -2,10 +2,10 @@ import json
 import logging
 import uvicorn
 import webbrowser
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from pydantic import BaseModel
 from typing import Optional
-from utils.db import init_db, get_pending_checkpoints, get_checkpoint
+from utils.db import init_db, get_pending_checkpoints, get_checkpoint, update_checkpoint, save_checkpoint
 from utils.mcp_router import CommonClient, AtlasClient
 from nodes.intake import run_intake
 from nodes.understand import run_understand
@@ -25,179 +25,233 @@ from fastapi.responses import HTMLResponse
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("orchestrator")
 
-# Load workflow configuration
+# Load workflow config
 with open("workflow.json") as f:
     WORKFLOW = json.load(f)
 
 app = FastAPI()
 init_db()
-
-# Mount UI directory
 app.mount("/ui", StaticFiles(directory="ui"), name="ui")
 
-# Initialize tool clients
+# Tool clients
 common_client = CommonClient()
 atlas_client = AtlasClient()
 TOOLS = {"common": common_client, "atlas": atlas_client}
 
+# ----------------------------------------------------------
+# WORKFLOW PIPELINE
+# ----------------------------------------------------------
 
 def execute_workflow(input_invoice: dict):
-    state = {"input_invoice": input_invoice, "logs": [], "status": "RUNNING", "paused": False}
+    state = {
+        "input_invoice": input_invoice,
+        "logs": [],
+        "status": "RUNNING",
+        "paused": False
+    }
 
-    # Workflow nodes
+    # Pipeline
     state = run_intake(state, TOOLS)
     state = run_understand(state, TOOLS)
     state = run_prepare(state, TOOLS)
     state = run_retrieve(state, TOOLS)
-    state = run_match(state, TOOLS, match_threshold=WORKFLOW["config"]["match_threshold"])
+    state = run_match(state, TOOLS, match_threshold=WORKFLOW["config"].get("match_threshold", 0.8))
 
-    # Add invoice details for HITL UI
+    # Build invoice metadata for reviewer
+    inv = input_invoice.copy()
+    inv["matched_pos"] = state.get("RETRIEVE", {}).get("matched_pos", [])
+    inv["matched_grns"] = state.get("RETRIEVE", {}).get("matched_grns", [])
+
+    if "line_items" not in inv and "parsed_invoice" in state.get("UNDERSTAND", {}):
+        inv["line_items"] = state["UNDERSTAND"]["parsed_invoice"].get("parsed_line_items", [])
+
+    # Risk score
+    prepare_flags = state.get("PREPARE", {}).get("flags")
+    inv["risk_score"] = prepare_flags.get("risk_score") if isinstance(prepare_flags, dict) else None
+
+    # ---- HITL Node ----
     state = run_checkpoint(state, TOOLS)
+
     if "CHECKPOINT_HITL" in state:
-        invoice_meta = input_invoice.copy()
-        invoice_meta["matched_pos"] = state.get("RETRIEVE", {}).get("matched_pos", [])
-        invoice_meta["matched_grns"] = state.get("RETRIEVE", {}).get("matched_grns", [])
-        if "line_items" not in invoice_meta and "parsed_invoice" in state.get("UNDERSTAND", {}):
-            invoice_meta["line_items"] = state["UNDERSTAND"]["parsed_invoice"].get("parsed_line_items", [])
-        invoice_meta["risk_score"] = state.get("PREPARE", {}).get("flags", {}).get("risk_score")
-        state["CHECKPOINT_HITL"]["invoice_metadata"] = invoice_meta
+        checkpoint_id = state["CHECKPOINT_HITL"].get("checkpoint_id")
+        state["CHECKPOINT_HITL"]["invoice_metadata"] = inv
 
-    # Pause for HITL
-    if state.get("paused"):
-        checkpoint_id = state["CHECKPOINT_HITL"]["checkpoint_id"]
-        url = f"http://127.0.0.1:8000/ui/reviewer.html?checkpoint_id={checkpoint_id}"
-        logger.info(f"HITL required! Visit: {url}")
-        webbrowser.open(url)
-        state["status"] = "PAUSED"
-        return state
+        # Determine HOLD reasons
+        total_po_amount = sum([po.get("amount", 0) for po in inv.get("matched_pos", [])])
+        amount_mismatch = (total_po_amount != inv.get("amount", 0))
+        missing_fields = state.get("INTAKE", {}).get("missing_fields", [])
+        unmatched_pos = (len(inv.get("matched_pos", [])) == 0)
 
-    # Continue workflow if no HITL pause
+        reasons = []
+        if amount_mismatch:
+            reasons.append(f"Amount mismatch: invoice {inv.get('amount')} vs PO total {total_po_amount}")
+        if unmatched_pos:
+            reasons.append("No matched POs found")
+        if missing_fields:
+            reasons.append(f"Missing fields: {', '.join(missing_fields)}")
+
+        # Only pause if real reasons exist
+        if reasons:
+            state["paused"] = True
+            state["status"] = "PAUSED"
+            state["CHECKPOINT_HITL"]["paused_reason"] = "; ".join(reasons)
+
+            # Save checkpoint
+            save_checkpoint(checkpoint_id, state, status="PAUSED", resume_token=None)
+
+            # Open reviewer UI just once
+            url = f"http://127.0.0.1:8000/ui/reviewer.html?checkpoint_id={checkpoint_id}"
+            logger.info(f"Opening Reviewer UI → {url}")
+            try:
+                webbrowser.open(url)
+            except:
+                pass
+
+            return state
+
+        # If no reasons -> continue
+        logger.info("No HITL required, continuing workflow")
+
+    # Continue pipeline
     state = run_reconcile(state, TOOLS)
     state = run_approve(state, TOOLS)
     state = run_posting(state, TOOLS)
     state = run_notify(state, TOOLS)
     state = run_complete(state, TOOLS)
+
     state["status"] = "COMPLETED"
     return state
 
+# ----------------------------------------------------------
+# API MODELS
+# ----------------------------------------------------------
 
-# Request Models
 class StartRequest(BaseModel):
     input_invoice: dict
 
-
 class DecisionRequest(BaseModel):
     checkpoint_id: str
-    decision: str  # ACCEPT or REJECT
+    decision: str
     notes: Optional[str]
     reviewer_id: str
 
+# ----------------------------------------------------------
+# ROUTES
+# ----------------------------------------------------------
 
-# Start Workflow
 @app.post("/start-workflow")
 def start_workflow(req: StartRequest):
-    logger.info("Workflow started")
-    state = execute_workflow(req.input_invoice)
-    return state
+    logger.info("Workflow started via API")
+    return execute_workflow(req.input_invoice)
 
 
-# Human Review Pending List
+@app.post("/upload-invoice")
+async def upload_invoice(file: UploadFile = File(...)):
+    if not file.filename.endswith(".json"):
+        return {"error": "Only JSON files are allowed"}
+
+    content = await file.read()
+    try:
+        data = json.loads(content)
+    except Exception as e:
+        return {"error": f"Invalid JSON: {str(e)}"}
+
+    input_invoice = data.get("input_invoice", data)
+    return execute_workflow(input_invoice)
+
+
 @app.get("/human-review/pending")
 def list_pending():
     items = get_pending_checkpoints()
-    res = []
+    output = []
 
     for it in items:
-        st = it["state"]
-        inv = st.get("input_invoice", {})
-        full_invoice = st.get("CHECKPOINT_HITL", {}).get("invoice_metadata", inv)
+        st = it.get("state", {})
+        cp_hitl = st.get("CHECKPOINT_HITL", {})
+        inv = cp_hitl.get("invoice_metadata", st.get("input_invoice", {}))
 
-        res.append({
-            "checkpoint_id": it["checkpoint_id"],
-            "invoice_id": full_invoice.get("invoice_id"),
-            "vendor_name": full_invoice.get("vendor_name"),
-            "amount": full_invoice.get("amount"),
-            "currency": full_invoice.get("currency"),
-            "invoice_date": full_invoice.get("invoice_date"),
-            "line_items": full_invoice.get("line_items", []),
-            "matched_pos": full_invoice.get("matched_pos", []),
-            "matched_grns": full_invoice.get("matched_grns", []),
-            "created_at": it["created_at"],
-            "reason_for_hold": st.get("CHECKPOINT_HITL", {}).get("paused_reason"),
-            "invoice_data": full_invoice,
-            "review_url": f"/ui/reviewer.html?checkpoint_id={it['checkpoint_id']}"
+        paused_reason = cp_hitl.get("paused_reason")
+        if not paused_reason:
+            paused_reason = "Manual review required"
+
+        output.append({
+            "checkpoint_id": it.get("checkpoint_id"),
+            "invoice_id": inv.get("invoice_id"),
+            "vendor_name": inv.get("vendor_name"),
+            "amount": inv.get("amount"),
+            "currency": inv.get("currency"),
+            "invoice_date": inv.get("invoice_date"),
+            "line_items": inv.get("line_items", []),
+            "matched_pos": inv.get("matched_pos", []),
+            "matched_grns": inv.get("matched_grns", []),
+            "reason_for_hold": paused_reason,
+            "review_url": f"/ui/reviewer.html?checkpoint_id={it.get('checkpoint_id')}",
+            "created_at": it.get("created_at"),
+            "status": it.get("status", "PAUSED")
         })
 
-    return {"items": res}
+    return {"items": output}
 
 
-# Human Decision
 @app.post("/human-review/decision")
 def decision(req: DecisionRequest):
     cp = get_checkpoint(req.checkpoint_id)
     if not cp:
         raise HTTPException(status_code=404, detail="checkpoint not found")
-    if cp["status"] != "PAUSED":
-        raise HTTPException(status_code=400, detail="checkpoint not in PAUSED state")
 
-    state, status = apply_human_decision(req.checkpoint_id, req.decision, req.notes or "", req.reviewer_id)
+    if cp.get("status") != "PAUSED":
+        raise HTTPException(status_code=400, detail="checkpoint not paused")
+
+    state, status = apply_human_decision(
+        req.checkpoint_id, req.decision, req.notes or "", req.reviewer_id
+    )
+
     if status != "ok":
-        raise HTTPException(status_code=500, detail="failed to apply decision")
+        raise HTTPException(status_code=500, detail="Failed to apply decision")
 
-    if "CHECKPOINT_HITL" in state:
-        state["invoice_metadata"] = state["CHECKPOINT_HITL"].get("invoice_metadata")
-
-    # Run post-decision workflow stages only if ACCEPT
+    # Accept → continue workflow
     if req.decision.upper() == "ACCEPT":
         state = run_reconcile(state, TOOLS)
         state = run_approve(state, TOOLS)
         state = run_posting(state, TOOLS)
         state = run_notify(state, TOOLS)
         state = run_complete(state, TOOLS)
-
     else:
         state["status"] = "MANUAL_HANDOFF"
 
-    # Return only post-decision logs
-    post_decision_logs = state.get("logs", [])
     return {
-        "resume_token": cp.get("resume_token"),
         "next_stage": "RECONCILE" if req.decision.upper() == "ACCEPT" else None,
-        "final_state": state,
-        "post_decision_logs": post_decision_logs
+        "post_decision_logs": state.get("logs", []),
+        "final_state": state
     }
 
 
-# Fetch checkpoint for UI
 @app.get("/api/checkpoint/{checkpoint_id}")
 def get_checkpoint_data(checkpoint_id: str):
     cp = get_checkpoint(checkpoint_id)
     if not cp:
         raise HTTPException(status_code=404, detail="checkpoint not found")
-
-    return {
-        "checkpoint_id": checkpoint_id,
-        "created_at": cp["created_at"],
-        "status": cp["status"],
-        "state": cp["state"]
-    }
+    return {"checkpoint_id": checkpoint_id, "state": cp.get("state"), "status": cp.get("status")}
 
 
-# Serve static HTML UI files
+# Serve UI
 @app.get("/ui/{filename}", response_class=HTMLResponse)
 async def serve_ui(filename: str):
     try:
         with open(f"ui/{filename}", "r", encoding="utf-8") as f:
             return f.read()
-    except FileNotFoundError:
-        return HTMLResponse("<h3>404 - UI File Not Found</h3>", status_code=404)
+    except:
+        return HTMLResponse("<h3>404 Not Found</h3>", status_code=404)
 
 
+# ----------------------------------------------------------
+# START SERVER
+# ----------------------------------------------------------
 if __name__ == "__main__":
-    url = "http://127.0.0.1:8000/ui/index.html"
-    logger.info(f"Starting app at {url}")
+    url = "http://127.0.0.1:8000/ui/upload.html"
     try:
         webbrowser.open(url)
-    except Exception as e:
-        logger.error(f"Failed to open browser: {e}")
+    except:
+        pass
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

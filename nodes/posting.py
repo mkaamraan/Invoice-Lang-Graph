@@ -1,15 +1,14 @@
+import logging
+from utils.mcp_router import AtlasClient
+
+log = logging.getLogger(__name__)
+
 def run_posting(state: dict, tools: dict) -> dict:
-    atlas = tools["atlas"]
-    invoice = state["input_invoice"]
+    atlas = tools.get("atlas", AtlasClient())
+    invoice = state.get("input_invoice", {})
+    resp = atlas.call("post_to_erp", invoice)
 
-    posted = atlas.call("post_to_erp", {"invoice": invoice})
-    scheduled = atlas.call("schedule_payment", {"invoice": invoice})
-
-    state["POSTING"] = {
-        "posted": posted.get("posted"),
-        "erp_txn_id": posted.get("erp_txn_id"),
-        "scheduled_payment_id": scheduled.get("scheduled_payment_id")
-    }
-
-    state.setdefault("logs", []).append("POSTING: posted & payment scheduled")
+    state["POSTING"] = {"erp_txn_id": resp.get("erp_txn_id")}
+    state.setdefault("logs", []).append(f"POSTING: posted to ERP {resp.get('erp_txn_id')}")
+    log.info("POSTING executed")
     return state

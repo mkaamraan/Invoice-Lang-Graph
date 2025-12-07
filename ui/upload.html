@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Invoice Workflow UI</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        pre { background-color: #f8f8f8; padding: 10px; max-height: 400px; overflow-y: scroll; }
+        button { padding: 10px 20px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+<h2>Invoice Workflow Input</h2>
+
+<input type="file" id="invoice_file" accept=".json">
+<br>
+<button onclick="submitInvoice()">Submit Invoice</button>
+
+<h3>Workflow Logs</h3>
+<pre id="logs"></pre>
+
+<script>
+async function submitInvoice() {
+    const fileInput = document.getElementById("invoice_file");
+    if (!fileInput.files.length) {
+        alert("Please select a JSON file to upload");
+        return;
+    }
+
+    const file = fileInput.files[0];
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+        const resp = await fetch("/upload-invoice", {
+            method: "POST",
+            body: formData
+        });
+        const data = await resp.json();
+        document.getElementById("logs").textContent = JSON.stringify(data.logs || data, null, 2);
+
+        if (data.status === "PAUSED" && data.CHECKPOINT_HITL) {
+            const checkpoint_id = data.CHECKPOINT_HITL.checkpoint_id;
+            window.open(`/ui/reviewer.html?checkpoint_id=${checkpoint_id}`, "_blank");
+        }
+    } catch (err) {
+        alert("Error: " + err.message);
+    }
+}
+</script>
+</body>
+</html>

@@ -1,15 +1,22 @@
 {
   "input_invoice": {
-    "invoice_id": "INV-1001",
+    "invoice_id": "INV-2001",
     "vendor_name": "acme corp",
     "vendor_tax_id": "27ABCDE1234F1Z5",
-    "invoice_date": "2025-11-30",
-    "due_date": "2025-12-30",
-    "amount": 15000,
+    "invoice_date": "2025-12-01",
+    "due_date": "2025-12-31",
+    "amount": 12000,
     "currency": "INR",
     "line_items": [
-      { "desc": "widget", "qty": 10, "unit_price": 1500, "total": 15000 }
+      {
+        "desc": "widget",
+        "qty": 10,
+        "unit_price": 1200,
+        "total": 12000
+      }
     ],
-    "attachments": ["invoice-1001.pdf"]
+    "attachments": [
+      "invoice-2001.pdf"
+    ]
   }
 }

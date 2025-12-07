@@ -1,12 +1,13 @@
 from datetime import datetime
 import logging
+
 log = logging.getLogger(__name__)
 
 def run_intake(state: dict, tools: dict) -> dict:
     payload = state.get("input_invoice", {})
     required = ["invoice_id", "vendor_name", "amount"]
     missing = [r for r in required if not payload.get(r)]
-    validated = (len(missing) == 0)
+    validated = len(missing) == 0
 
     raw_id = f"raw_{payload.get('invoice_id', 'noid')}"
     ingest_ts = datetime.utcnow().isoformat()
@@ -18,8 +19,7 @@ def run_intake(state: dict, tools: dict) -> dict:
         "missing_fields": missing
     }
 
-    msg = f"INTAKE: validated={validated}, raw_id={raw_id}"
+    msg = f"INTAKE: validated={validated}, raw_id={raw_id}, missing={missing}"
     state.setdefault("logs", []).append(msg)
     log.info(msg)
-
     return state

@@ -19,46 +19,36 @@
     <p><b>Reason for Hold:</b> <span id="reason"></span></p>
 
     <h3>Invoice Details</h3>
-    <table>
-        <tbody id="invoice_details"></tbody>
-    </table>
+    <table><tbody id="invoice_details"></tbody></table>
 
     <h3>Line Items</h3>
     <table>
-        <thead>
-            <tr>
-                <th>Description</th>
-                <th>Qty</th>
-                <th>Unit Price</th>
-                <th>Total</th>
-            </tr>
-        </thead>
+        <thead><tr><th>Description</th><th>Qty</th><th>Unit Price</th><th>Total</th></tr></thead>
         <tbody id="line_items"></tbody>
     </table>
 
-    <h3>PO Numbers</h3>
+    <h3>Matched PO(s)</h3>
     <table>
-        <thead>
-            <tr>
-                <th>PO ID</th>
-                <th>Amount</th>
-            </tr>
-        </thead>
+        <thead><tr><th>PO ID</th><th>Amount</th></tr></thead>
         <tbody id="po_numbers"></tbody>
     </table>
 
-    <h3>Attachments</h3>
+    <h3>Matched GRN(s)</h3>
     <table>
-        <tbody id="attachments_risk"></tbody>
+        <thead><tr><th>GRN ID</th><th>Amount</th></tr></thead>
+        <tbody id="grn_numbers"></tbody>
     </table>
+
+    <h3>Attachments & Risk</h3>
+    <table><tbody id="attachments_risk"></tbody></table>
 
     <h3>Actions</h3>
     <div class="actions">
-        <button onclick="submitDecision('ACCEPT')">ACCEPT</button>
-        <button onclick="submitDecision('REJECT')">REJECT</button>
+        <button id="acceptBtn" onclick="submitDecision('ACCEPT')">ACCEPT</button>
+        <button id="rejectBtn" onclick="submitDecision('REJECT')">REJECT</button>
     </div>
 
-    <h3>Post-Decision Logs</h3>
+    <h3>Logs</h3>
     <pre id="logsBox"></pre>
 
     <h3>Final State</h3>
@@ -67,9 +57,8 @@
 
 <script>
 async function loadData() {
-    const urlParams = new URLSearchParams(window.location.search);
-    const checkpoint_id = urlParams.get("checkpoint_id");
-    document.getElementById("checkpoint_id").innerText = checkpoint_id;
+    const checkpoint_id = new URLSearchParams(window.location.search).get("checkpoint_id");
+    document.getElementById("checkpoint_id").textContent = checkpoint_id;
 
     const resp = await fetch("/api/checkpoint/" + checkpoint_id);
     const data = await resp.json();
@@ -77,76 +66,66 @@ async function loadData() {
 
     const inv = st.CHECKPOINT_HITL?.invoice_metadata || st.input_invoice || {};
 
-    // HITL reason
+    // Reason for hold
+    const reasonFromState = st.CHECKPOINT_HITL?.paused_reason;
     let reasons = [];
-    if (st.CHECKPOINT_HITL?.paused_reason) reasons.push(st.CHECKPOINT_HITL.paused_reason);
+    if(reasonFromState) reasons.push(reasonFromState);
+    document.getElementById("reason").textContent = reasons.join("; ") || "N/A";
 
-    const poTotal = (inv.matched_pos || []).reduce((sum, po) => sum + (po.amount || 0), 0);
-    if (inv.amount !== poTotal) reasons.push("Amount Mismatch");
-
-    document.getElementById("reason").innerText = reasons.join("; ") || "N/A";
-
-    // Invoice Details
+    // Invoice details
     document.getElementById("invoice_details").innerHTML = `
-        <tr><th>Invoice ID</th><td>${inv.invoice_id || ""}</td></tr>
-        <tr><th>Vendor Name</th><td>${inv.vendor_name || ""}</td></tr>
-        <tr><th>Invoice Date</th><td>${inv.invoice_date || ""}</td></tr>
-        <tr><th>Due Date</th><td>${inv.due_date || ""}</td></tr>
-        <tr><th>Amount</th><td>${inv.amount || ""}</td></tr>
-        <tr><th>Currency</th><td>${inv.currency || ""}</td></tr>
+        <tr><th>Invoice ID</th><td>${inv.invoice_id||""}</td></tr>
+        <tr><th>Vendor Name</th><td>${inv.vendor_name||""}</td></tr>
+        <tr><th>Invoice Date</th><td>${inv.invoice_date||""}</td></tr>
+        <tr><th>Amount</th><td>${inv.amount||""}</td></tr>
+        <tr><th>Currency</th><td>${inv.currency||""}</td></tr>
     `;
 
-    // Line Items
-    const items = inv.line_items || [];
+    // Line items
+    const items = inv.line_items||[];
     document.getElementById("line_items").innerHTML = items.map(it => `
-        <tr>
-            <td>${it.desc || ""}</td>
-            <td>${it.qty || ""}</td>
-            <td>${it.unit_price || ""}</td>
-            <td>${it.total || ""}</td>
-        </tr>
+        <tr><td>${it.desc||""}</td><td>${it.qty||""}</td><td>${it.unit_price||""}</td><td>${it.total||""}</td></tr>
     `).join("");
 
-    // PO Numbers
-    const pos = inv.matched_pos || [];
+    // Matched POs
+    const pos = inv.matched_pos||[];
     document.getElementById("po_numbers").innerHTML = pos.map(po => `
-        <tr>
-            <td>${po.po_id || ""}</td>
-            <td>${po.amount || ""}</td>
-        </tr>
+        <tr><td>${po.po_id||""}</td><td>${po.amount||""}</td></tr>
     `).join("");
 
-    // Attachments
+    // Matched GRNs
+    const grns = inv.matched_grns||[];
+    document.getElementById("grn_numbers").innerHTML = grns.map(grn => `
+        <tr><td>${grn.grn_id||""}</td><td>${grn.amount||""}</td></tr>
+    `).join("");
+
+    // Attachments & Risk
     document.getElementById("attachments_risk").innerHTML = `
-        <tr><th>Attachments</th><td>${(inv.attachments || []).join(", ")}</td></tr>
+        <tr><th>Attachments</th><td>${(inv.attachments||[]).join(", ")}</td></tr>
+        <tr><th>Risk Score</th><td>${inv.risk_score??"N/A"}</td></tr>
     `;
+
+    // Logs
+    document.getElementById("logsBox").textContent = (st.logs||[]).join("\n");
 }
 
 async function submitDecision(decision) {
-    const urlParams = new URLSearchParams(window.location.search);
-    const checkpoint_id = urlParams.get("checkpoint_id");
-
+    const checkpoint_id = new URLSearchParams(window.location.search).get("checkpoint_id");
     const resp = await fetch("/human-review/decision", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-            checkpoint_id,
-            decision,
-            reviewer_id: "Reviewer1",
-            notes: ""
-        })
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({checkpoint_id, decision, reviewer_id:"Reviewer1", notes:""})
     });
-
     const data = await resp.json();
 
-    // Display only post-decision logs and final state
-    if (data.post_decision_logs) {
-        document.getElementById("logsBox").textContent =
-            data.post_decision_logs.join("\n");
-        document.getElementById("stateBox").textContent =
-            JSON.stringify(data.final_state, null, 2);
-        alert("Decision submitted: " + decision);
-    }
+    // disable buttons
+    document.getElementById("acceptBtn").disabled = true;
+    document.getElementById("rejectBtn").disabled = true;
+
+    // post-decision logs & state
+    document.getElementById("logsBox").textContent = (data.post_decision_logs||[]).join("\n");
+    document.getElementById("stateBox").textContent = JSON.stringify(data.final_state, null, 2);
+    alert("Decision submitted: " + decision);
 }
 
 loadData();

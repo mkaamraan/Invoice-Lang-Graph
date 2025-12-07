@@ -1,78 +1,106 @@
 import sqlite3
 import json
-import uuid
 from datetime import datetime
-from typing import Optional
 
-DB_PATH = "./demo.db"
+DB_FILE = "checkpoints.db"
+
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("""
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
     CREATE TABLE IF NOT EXISTS checkpoints (
-        id TEXT PRIMARY KEY,
-        invoice_id TEXT,
-        state_blob TEXT,
-        status TEXT,
+        checkpoint_id TEXT PRIMARY KEY,
         created_at TEXT,
+        state TEXT,
+        status TEXT,
         resume_token TEXT
     )
-    """)
+    ''')
     conn.commit()
     conn.close()
 
-def save_checkpoint(invoice_id: str, state: dict, status: str = "PAUSED") -> str:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cid = str(uuid.uuid4())
-    resume_token = str(uuid.uuid4())
-    cur.execute(
-        "INSERT INTO checkpoints (id, invoice_id, state_blob, status, created_at, resume_token) VALUES (?,?,?,?,?,?)",
-        (cid, invoice_id, json.dumps(state), status, datetime.utcnow().isoformat(), resume_token)
-    )
+
+def save_checkpoint(checkpoint_id, state, status="PAUSED", resume_token=None):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''
+    INSERT OR REPLACE INTO checkpoints (checkpoint_id, created_at, state, status, resume_token)
+    VALUES (?, ?, ?, ?, ?)
+    ''', (checkpoint_id, datetime.now().isoformat(), json.dumps(state), status, resume_token))
     conn.commit()
     conn.close()
-    return cid
+
+
+def get_checkpoint(checkpoint_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT state, status, resume_token FROM checkpoints WHERE checkpoint_id=?", (checkpoint_id,))
+    row = c.fetchone()
+    conn.close()
+
+    if row:
+        return {
+            "state": json.loads(row[0]),
+            "status": row[1],
+            "resume_token": row[2]
+        }
+    return None
+
 
 def get_pending_checkpoints():
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT id, invoice_id, state_blob, status, created_at, resume_token FROM checkpoints WHERE status = 'PAUSED'")
-    rows = cur.fetchall()
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT checkpoint_id, created_at, state FROM checkpoints WHERE status='PAUSED'")
+    rows = c.fetchall()
     conn.close()
-    result = []
+
+    res = []
     for r in rows:
-        result.append({
+        res.append({
             "checkpoint_id": r[0],
-            "invoice_id": r[1],
-            "state": json.loads(r[2]),
-            "status": r[3],
-            "created_at": r[4],
-            "resume_token": r[5]
+            "created_at": r[1],
+            "state": json.loads(r[2])
         })
-    return result
+    return res
 
-def get_checkpoint(checkpoint_id: str) -> Optional[dict]:
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("SELECT id, invoice_id, state_blob, status, created_at, resume_token FROM checkpoints WHERE id=?", (checkpoint_id,))
-    r = cur.fetchone()
-    conn.close()
-    if not r:
-        return None
-    return {
-        "checkpoint_id": r[0],
-        "invoice_id": r[1],
-        "state": json.loads(r[2]),
-        "status": r[3],
-        "created_at": r[4],
-        "resume_token": r[5]
-    }
 
-def update_checkpoint_status(checkpoint_id: str, status: str):
-    conn = sqlite3.connect(DB_PATH)
-    cur = conn.cursor()
-    cur.execute("UPDATE checkpoints SET status=? WHERE id=?", (status, checkpoint_id))
+# ✅ ADDING THIS FUNCTION — REQUIRED BY main.py
+def update_checkpoint(checkpoint_id, updates: dict):
+    """
+    Update any fields inside the checkpoint row.
+    Example usage:
+        update_checkpoint("abc123", {"status": "RESOLVED"})
+    """
+
+    # Fetch existing record
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT state, status, resume_token FROM checkpoints WHERE checkpoint_id=?", (checkpoint_id,))
+    row = c.fetchone()
+
+    if not row:
+        conn.close()
+        return False
+
+    # Unpack existing values
+    state_json, status, resume_token = row
+    state_dict = json.loads(state_json)
+
+    # Apply updates
+    if "state" in updates:
+        state_dict.update(updates["state"])
+
+    new_status = updates.get("status", status)
+    new_resume_token = updates.get("resume_token", resume_token)
+
+    # Update DB row
+    c.execute('''
+        UPDATE checkpoints
+        SET state=?, status=?, resume_token=?
+        WHERE checkpoint_id=?
+    ''', (json.dumps(state_dict), new_status, new_resume_token, checkpoint_id))
+
     conn.commit()
     conn.close()
+    return True
