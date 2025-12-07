@@ -8,9 +8,8 @@
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
         th { background-color: #f0f0f0; }
-        .actions button {
-            padding: 10px 20px; margin-right: 10px; cursor: pointer;
-        }
+        .actions button { padding: 10px 20px; margin-right: 10px; cursor: pointer; }
+        pre { background-color: #f8f8f8; padding: 10px; max-height: 300px; overflow-y: scroll; }
     </style>
 </head>
 <body>
@@ -58,6 +57,12 @@
         <button onclick="submitDecision('ACCEPT')">ACCEPT</button>
         <button onclick="submitDecision('REJECT')">REJECT</button>
     </div>
+
+    <h3>Post-Decision Logs</h3>
+    <pre id="logsBox"></pre>
+
+    <h3>Final State</h3>
+    <pre id="stateBox"></pre>
 </div>
 
 <script>
@@ -72,29 +77,17 @@ async function loadData() {
 
     const inv = st.CHECKPOINT_HITL?.invoice_metadata || st.input_invoice || {};
 
-    // Only include actual HITL reasons
+    // HITL reason
     let reasons = [];
+    if (st.CHECKPOINT_HITL?.paused_reason) reasons.push(st.CHECKPOINT_HITL.paused_reason);
 
-    // If HITL explicitly paused it
-    if (st.CHECKPOINT_HITL?.paused_reason) {
-        reasons.push(st.CHECKPOINT_HITL.paused_reason);
-    }
-
-    // Detect dynamic mismatches
     const poTotal = (inv.matched_pos || []).reduce((sum, po) => sum + (po.amount || 0), 0);
     if (inv.amount !== poTotal) reasons.push("Amount Mismatch");
-
-    const matchedVendor = st.RETRIEVE?.matched_vendor_name || "";
-    if (matchedVendor && inv.vendor_name.toLowerCase() !== matchedVendor.toLowerCase()) reasons.push("Vendor Mismatch");
-
-    (inv.line_items || []).forEach((li, idx) => {
-        if (li.qty * li.unit_price !== li.total) reasons.push(`Line Item ${idx+1} Total Mismatch`);
-    });
 
     document.getElementById("reason").innerText = reasons.join("; ") || "N/A";
 
     // Invoice Details
-    let invoiceDetails = `
+    document.getElementById("invoice_details").innerHTML = `
         <tr><th>Invoice ID</th><td>${inv.invoice_id || ""}</td></tr>
         <tr><th>Vendor Name</th><td>${inv.vendor_name || ""}</td></tr>
         <tr><th>Invoice Date</th><td>${inv.invoice_date || ""}</td></tr>
@@ -102,11 +95,10 @@ async function loadData() {
         <tr><th>Amount</th><td>${inv.amount || ""}</td></tr>
         <tr><th>Currency</th><td>${inv.currency || ""}</td></tr>
     `;
-    document.getElementById("invoice_details").innerHTML = invoiceDetails;
 
     // Line Items
     const items = inv.line_items || [];
-    const lineItemsHTML = items.map(it => `
+    document.getElementById("line_items").innerHTML = items.map(it => `
         <tr>
             <td>${it.desc || ""}</td>
             <td>${it.qty || ""}</td>
@@ -114,25 +106,20 @@ async function loadData() {
             <td>${it.total || ""}</td>
         </tr>
     `).join("");
-    document.getElementById("line_items").innerHTML = lineItemsHTML;
 
     // PO Numbers
-    const pos = (inv.matched_pos && inv.matched_pos.length > 0) 
-        ? inv.matched_pos 
-        : (st.RETRIEVE?.matched_pos || []);
-    const poHTML = pos.map(po => `
+    const pos = inv.matched_pos || [];
+    document.getElementById("po_numbers").innerHTML = pos.map(po => `
         <tr>
             <td>${po.po_id || ""}</td>
             <td>${po.amount || ""}</td>
         </tr>
     `).join("");
-    document.getElementById("po_numbers").innerHTML = poHTML;
 
     // Attachments
-    const attachmentsHTML = `
+    document.getElementById("attachments_risk").innerHTML = `
         <tr><th>Attachments</th><td>${(inv.attachments || []).join(", ")}</td></tr>
     `;
-    document.getElementById("attachments_risk").innerHTML = attachmentsHTML;
 }
 
 async function submitDecision(decision) {
@@ -151,7 +138,15 @@ async function submitDecision(decision) {
     });
 
     const data = await resp.json();
-    alert("Decision submitted: " + decision);
+
+    // Display only post-decision logs and final state
+    if (data.post_decision_logs) {
+        document.getElementById("logsBox").textContent =
+            data.post_decision_logs.join("\n");
+        document.getElementById("stateBox").textContent =
+            JSON.stringify(data.final_state, null, 2);
+        alert("Decision submitted: " + decision);
+    }
 }
 
 loadData();
