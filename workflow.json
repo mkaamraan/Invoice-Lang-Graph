@@ -1,0 +1,24 @@
+{
+  "version": "1.0",
+  "workflow_name": "InvoiceProcessing_v1",
+  "config": {
+    "match_threshold": 0.90,
+    "two_way_tolerance_pct": 5,
+    "human_review_queue": "human_review_queue",
+    "checkpoint_table": "checkpoints",
+    "default_db": "sqlite:///./demo.db"
+  },
+  "inputs": {
+    "invoice_payload": {
+      "invoice_id": "string",
+      "vendor_name": "string",
+      "vendor_tax_id": "string",
+      "invoice_date": "string",
+      "due_date": "string",
+      "amount": 0,
+      "currency": "string",
+      "line_items": [ { "desc": "string", "qty": 0, "unit_price": 0, "total": 0 } ],
+      "attachments": ["string"]
+    }
+  }
+}
