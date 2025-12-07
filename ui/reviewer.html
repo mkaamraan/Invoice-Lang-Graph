@@ -48,7 +48,7 @@
         <tbody id="po_numbers"></tbody>
     </table>
 
-    <h3>Attachments & Risk</h3>
+    <h3>Attachments</h3>
     <table>
         <tbody id="attachments_risk"></tbody>
     </table>
@@ -70,24 +70,28 @@ async function loadData() {
     const data = await resp.json();
     const st = data.state;
 
-    // Flatten invoice metadata
     const inv = st.CHECKPOINT_HITL?.invoice_metadata || st.input_invoice || {};
 
-    // Construct detailed Reason for Hold
-    let reason = st.CHECKPOINT_HITL?.paused_reason || "";
-    if (st.MATCH_TWO_WAY) {
-        const score = st.MATCH_TWO_WAY.match_score;
-        const result = st.MATCH_TWO_WAY.match_result;
-        reason += reason ? "; " : "";
-        reason += `${result || ""} (score=${score !== undefined ? score : "N/A"})`;
+    // Only include actual HITL reasons
+    let reasons = [];
+
+    // If HITL explicitly paused it
+    if (st.CHECKPOINT_HITL?.paused_reason) {
+        reasons.push(st.CHECKPOINT_HITL.paused_reason);
     }
 
-    const riskScore = inv.risk_score ?? st.PREPARE?.flags?.risk_score;
-    if (riskScore !== undefined) {
-        reason += "; risk_score=" + riskScore;
-    }
+    // Detect dynamic mismatches
+    const poTotal = (inv.matched_pos || []).reduce((sum, po) => sum + (po.amount || 0), 0);
+    if (inv.amount !== poTotal) reasons.push("Amount Mismatch");
 
-    document.getElementById("reason").innerText = reason || "N/A";
+    const matchedVendor = st.RETRIEVE?.matched_vendor_name || "";
+    if (matchedVendor && inv.vendor_name.toLowerCase() !== matchedVendor.toLowerCase()) reasons.push("Vendor Mismatch");
+
+    (inv.line_items || []).forEach((li, idx) => {
+        if (li.qty * li.unit_price !== li.total) reasons.push(`Line Item ${idx+1} Total Mismatch`);
+    });
+
+    document.getElementById("reason").innerText = reasons.join("; ") || "N/A";
 
     // Invoice Details
     let invoiceDetails = `
@@ -112,11 +116,10 @@ async function loadData() {
     `).join("");
     document.getElementById("line_items").innerHTML = lineItemsHTML;
 
-    // PO Numbers (merge from invoice_metadata or fallback to RETRIEVE.matched_pos)
+    // PO Numbers
     const pos = (inv.matched_pos && inv.matched_pos.length > 0) 
         ? inv.matched_pos 
         : (st.RETRIEVE?.matched_pos || []);
-
     const poHTML = pos.map(po => `
         <tr>
             <td>${po.po_id || ""}</td>
@@ -125,10 +128,9 @@ async function loadData() {
     `).join("");
     document.getElementById("po_numbers").innerHTML = poHTML;
 
-    // Attachments & Risk
+    // Attachments
     const attachmentsHTML = `
         <tr><th>Attachments</th><td>${(inv.attachments || []).join(", ")}</td></tr>
-        <tr><th>Risk Score</th><td>${riskScore !== undefined ? riskScore : "N/A"}</td></tr>
     `;
     document.getElementById("attachments_risk").innerHTML = attachmentsHTML;
 }

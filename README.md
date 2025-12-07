@@ -1,163 +1,157 @@
-AI-Powered Invoice Processing Workflow (with HITL Checkpointing)
+# AI-Powered Invoice Processing Workflow (with HITL Checkpointing)
 
-This repository contains a complete AI-driven invoice processing workflow, built using a modular multi-stage architecture inspired by LangGraph-style orchestration. It demonstrates real-world workflow automation.
+This repository contains a complete AI-driven invoice processing workflow, built using a modular multi-stage architecture inspired by **LangGraph-style orchestration**. It demonstrates real-world workflow automation with Human-in-the-Loop (HITL) checkpoints for exceptional cases.
 
-Key Highlights
+---
 
-Modular Multi-Node Architecture: Each stage (INTAKE → UNDERSTAND → PREPARE → RETRIEVE → MATCH → HITL → RECONCILE → APPROVE → POSTING → NOTIFY → COMPLETE) is a separate node, following LangGraph/Temporal workflow patterns.
+## Key Highlights
 
-AI-Assisted Invoice Understanding: OCR simulation, vendor normalization, enrichment, line-item parsing, and risk scoring.
+- **Modular Multi-Node Architecture**: Each stage (INTAKE → UNDERSTAND → PREPARE → RETRIEVE → MATCH → HITL → RECONCILE → APPROVE → POSTING → NOTIFY → COMPLETE) is a separate node, following LangGraph/Temporal workflow patterns.
+- **AI-Assisted Invoice Understanding**: OCR simulation, vendor normalization, enrichment, line-item parsing, and risk scoring.
+- **Two-Way PO Matching**: Compares invoice vs ERP PO, calculates match score, and pauses workflow automatically if threshold not met.
+- **Human-In-The-Loop (HITL) Checkpoints**: Workflow pauses on failed matches; reviewers can Accept/Reject via a simple UI (`reviewer.html`), with automatic workflow resume on acceptance.
+- **ERP Lookups (Simulated)**: Offline mock ERP integration for PO, GRN, and vendor history lookups.
+- **Complete FastAPI Backend**: Endpoints for starting workflow, listing HITL items, submitting reviewer decisions, and accessing reviewer UI.
 
-Two-Way PO Matching: Compares invoice vs ERP PO, calculates match score, pauses workflow automatically if threshold not met.
+---
 
-Human-In-The-Loop (HITL) Checkpoints: Workflow pauses on failed matches; reviewers can Accept/Reject via a simple UI (reviewer.html), with automatic workflow resume on acceptance.
+## Key Features
 
-ERP Lookups (Simulated): Offline mock ERP integration for PO, GRN, and vendor history lookups.
+### 1. Modular Multi-Node Workflow
+Each stage is implemented as a separate file under `nodes/`:
 
-Complete FastAPI Backend: Endpoints for starting workflow, listing HITL items, submitting reviewer decisions, and accessing reviewer UI.
-
-
-
-Key Features:
-
-1. Modular Multi-Node Workflow
-
-Each stage is implemented as a separate file under nodes/:
-
+```
 INTAKE → UNDERSTAND → PREPARE → RETRIEVE → MATCH
 → CHECKPOINT_HITL (Pause Workflow)
 → RECONCILE → APPROVE → POSTING → NOTIFY → COMPLETE
+```
 
-Each Node:
+- Each node accepts the workflow state, performs a specific task, appends logs, and returns the updated state.
+- Pattern inspired by production workflow engines: LangGraph, Temporal, Airflow, AWS Step Functions.
 
-Accepts the workflow state
+### 2. AI-Assisted Invoice Understanding
+Simulated workflow includes:
 
-Performs a specific task
+- OCR extraction (Tesseract or AWS Textract)
+- Vendor normalization
+- Vendor metadata enrichment
+- Line-item parsing
+- Risk flag generation
+- Smart tool selection (BigTool picker)
 
-Appends logs
-
-Returns updated state
-
-This pattern follows production workflow engines such as LangGraph, Temporal, Airflow, Step Functions.
-
-2. AI-Assisted Invoice Understanding
-
-The workflow simulates:
-
-OCR extraction
-
-Vendor normalization
-
-Vendor metadata enrichment
-
-Line-item interpretation
-
-Risk flag generation
-
-Smart tool selection (BigTool picker)
-
-3. ERP Lookups (Simulated)
-
+### 3. ERP Lookups (Simulated)
 Data retrieval includes:
 
-Purchase Order (PO) lookup
+- Purchase Order (PO) lookup
+- Goods Received Note (GRN) lookup
+- Vendor payment history
 
-Goods Received Note (GRN) lookup
+**Fully offline simulation**, no real ERP keys required.
 
-Vendor payment history
+### 4. Two-Way PO Matching
+Workflow computes:
 
-Using a mock ERP client to remain fully offline.
+- Amount difference
+- Line-item similarity
+- Risk scoring
+- Final match score (0–1)
 
-4. Two-Way PO Matching
+If `score < threshold`, workflow is **PAUSED** → HITL required.
 
-The workflow computes:
+### 5. Human-In-The-Loop (HITL) Checkpointing
+- Workflow state is saved into SQLite.
+- A checkpoint ID is created.
+- Reviewer UI allows **Accept/Reject** with notes.
+- ACCEPT → workflow resumes automatically.
+- REJECT → workflow ends as `MANUAL_HANDOFF`.
 
-Amount difference
+Dynamic HITL reasons are calculated per invoice:
 
-Line-item similarity
+- Amount mismatch
+- Vendor mismatch
+- Line-item mismatch
+- OCR parsing errors
+- ERP matching issues
 
-Risk scoring
+### 6. Workflow Auto-Resume After Approval
+After HITL acceptance:
 
-Final match score (0–1)
-
-Threshold configurable in workflow.json.
-
-If score < threshold → workflow PAUSED → HITL required.
-
-5. Human-In-The-Loop (HITL) Checkpointing
-
-If automatic processing fails:
-
-Workflow state is saved into SQLite
-
-A checkpoint ID is created
-
-Reviewer UI allows Accept/Reject with notes
-
-ACCEPT → workflow resumes
-REJECT → workflow ends as MANUAL_HANDOFF
-
-6. Workflow Auto-Resume After Approval
-
-After acceptance:
-
+```
 RECONCILE → APPROVE → POSTING → NOTIFY → COMPLETE
+```
 
-7. Reviewer UI (HTML)
+### 7. Reviewer UI (HTML)
+Simple UI located at `ui/reviewer.html`:
 
-A simple UI (ui/reviewer.html) for:
+- Enter checkpoint ID
+- Review invoice details
+- Accept/Reject actions with optional notes
+- Displays only the **specific HITL reason** for review
 
-Entering checkpoint ID
+---
 
-Adding reviewer notes
+## FastAPI Endpoints
 
-Accept/Reject actions
+| Method | Endpoint                     | Purpose                           |
+|--------|-------------------------------|-----------------------------------|
+| POST   | /start-workflow              | Start invoice workflow            |
+| GET    | /human-review/pending        | List pending HITL items           |
+| POST   | /human-review/decision       | Submit Accept/Reject decision     |
+| GET    | /ui/reviewer.html            | Reviewer UI                       |
 
+---
 
-FastAPI Endpoints
-Method	Endpoint		Purpose
-POST	/start-workflow		Start invoice workflow
-GET	/human-review/pending	List pending HITL items
-POST	/human-review/decision	Submit Accept/Reject
-GET	/ui/reviewer.html	Reviewer UI
+## Installation
 
-<<<<<<< HEAD
-=======
-
->>>>>>> f253c5b (Updated main.py to handle HITL workflow and reviewer)
-Installation:
-
-
+```bash
 git clone https://github.com/mkaamraan/Invoice-Lang-Graph
-cd invoice-workflow
+cd Invoice-Lang-Graph
 python -m venv venv
+```
 
-Activate the virtual environment:
+Activate virtual environment:
 
-Windows: venv\Scripts\activate
-Linux/Mac: source venv/bin/activate
+- **Windows**: `venv\Scripts\activate`  
+- **Linux/Mac**: `source venv/bin/activate`
 
 Install dependencies:
 
+```bash
 pip install -r requirements.txt
+```
 
+---
 
-Usage:
+## Usage
 
-1. Start the FastAPI server:
+1. **Start the FastAPI server:**
+```bash
 uvicorn main:app --reload
+```
 
-2. Test with sample invoice:
+2. **Submit a sample invoice:**
+```bash
 curl -X POST http://127.0.0.1:8000/start-workflow \
      -H "Content-Type: application/json" \
-     -d @sample_invoice.json
+     -d @sample_invoices/sample_invoice1.json
+```
 
-3. Access Reviewer UI:
-http://127.0.0.1:8000/ui/reviewer.html
+3. **Access Reviewer UI:**
+```
+http://127.0.0.1:8000/ui/reviewer.html?checkpoint_id=<checkpoint_id>
+```
 
+---
 
-Workflow currently flags high-risk vendors and missing tax IDs, but does not automatically pause for them.
+## Notes
 
-Duplicate invoice detection is not implemented yet.
+- HITL is triggered **only for invoices that require human attention**.
+- High-risk vendors or missing tax IDs can be flagged (configurable) but do not automatically pause workflow.
+- Duplicate invoice detection is not implemented yet.
 
-Fully offline simulation, no real ERP or OCR keys needed.
+---
+
+## License
+
+MIT License
+
