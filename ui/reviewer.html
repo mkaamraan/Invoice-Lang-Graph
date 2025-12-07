@@ -1,55 +1,158 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Invoice Human Review</title>
+    <title>Invoice Review</title>
     <style>
-        body { font-family: Arial; margin: 30px; }
-        .card { border: 1px solid #ccc; padding: 20px; width: 500px; }
-        button { padding: 10px; margin: 5px; }
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        .container { max-width: 900px; margin: auto; }
+        table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+        th, td { border: 1px solid #ccc; padding: 8px; text-align: left; }
+        th { background-color: #f0f0f0; }
+        .actions button {
+            padding: 10px 20px; margin-right: 10px; cursor: pointer;
+        }
     </style>
 </head>
 <body>
+<div class="container">
+    <h2>Invoice Review</h2>
+    <p><b>Checkpoint ID:</b> <span id="checkpoint_id"></span></p>
+    <p><b>Reason for Hold:</b> <span id="reason"></span></p>
 
-<h2>Invoice Human Review</h2>
+    <h3>Invoice Details</h3>
+    <table>
+        <tbody id="invoice_details"></tbody>
+    </table>
 
-<div class="card">
-    <label>Checkpoint ID:</label>
-    <input id="cp" style="width:100%">
-    <br><br>
+    <h3>Line Items</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>Description</th>
+                <th>Qty</th>
+                <th>Unit Price</th>
+                <th>Total</th>
+            </tr>
+        </thead>
+        <tbody id="line_items"></tbody>
+    </table>
 
-    <label>Reviewer ID:</label>
-    <input id="rid" style="width:100%" value="reviewer1">
-    <br><br>
+    <h3>PO Numbers</h3>
+    <table>
+        <thead>
+            <tr>
+                <th>PO ID</th>
+                <th>Amount</th>
+            </tr>
+        </thead>
+        <tbody id="po_numbers"></tbody>
+    </table>
 
-    <label>Notes:</label>
-    <textarea id="notes" style="width:100%;height:80px;"></textarea>
-    <br><br>
+    <h3>Attachments & Risk</h3>
+    <table>
+        <tbody id="attachments_risk"></tbody>
+    </table>
 
-    <button onclick="submitDecision('ACCEPT')">ACCEPT</button>
-    <button onclick="submitDecision('REJECT')">REJECT</button>
+    <h3>Actions</h3>
+    <div class="actions">
+        <button onclick="submitDecision('ACCEPT')">ACCEPT</button>
+        <button onclick="submitDecision('REJECT')">REJECT</button>
+    </div>
 </div>
 
 <script>
-    async function submitDecision(decision) {
-        const cp = document.getElementById("cp").value;
-        const rid = document.getElementById("rid").value;
-        const notes = document.getElementById("notes").value;
+async function loadData() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const checkpoint_id = urlParams.get("checkpoint_id");
+    document.getElementById("checkpoint_id").innerText = checkpoint_id;
 
-        const resp = await fetch("http://127.0.0.1:8000/human-review/decision", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                checkpoint_id: cp,
-                decision: decision,
-                reviewer_id: rid,
-                notes: notes
-            })
-        });
+    const resp = await fetch("/api/checkpoint/" + checkpoint_id);
+    const data = await resp.json();
+    const st = data.state;
 
-        const data = await resp.json();
-        alert(JSON.stringify(data, null, 2));
+    // Flatten invoice metadata
+    const inv = st.CHECKPOINT_HITL?.invoice_metadata || st.input_invoice || {};
+
+    // Construct detailed Reason for Hold
+    let reason = st.CHECKPOINT_HITL?.paused_reason || "";
+    if (st.MATCH_TWO_WAY) {
+        const score = st.MATCH_TWO_WAY.match_score;
+        const result = st.MATCH_TWO_WAY.match_result;
+        reason += reason ? "; " : "";
+        reason += `${result || ""} (score=${score !== undefined ? score : "N/A"})`;
     }
-</script>
 
+    const riskScore = inv.risk_score ?? st.PREPARE?.flags?.risk_score;
+    if (riskScore !== undefined) {
+        reason += "; risk_score=" + riskScore;
+    }
+
+    document.getElementById("reason").innerText = reason || "N/A";
+
+    // Invoice Details
+    let invoiceDetails = `
+        <tr><th>Invoice ID</th><td>${inv.invoice_id || ""}</td></tr>
+        <tr><th>Vendor Name</th><td>${inv.vendor_name || ""}</td></tr>
+        <tr><th>Invoice Date</th><td>${inv.invoice_date || ""}</td></tr>
+        <tr><th>Due Date</th><td>${inv.due_date || ""}</td></tr>
+        <tr><th>Amount</th><td>${inv.amount || ""}</td></tr>
+        <tr><th>Currency</th><td>${inv.currency || ""}</td></tr>
+    `;
+    document.getElementById("invoice_details").innerHTML = invoiceDetails;
+
+    // Line Items
+    const items = inv.line_items || [];
+    const lineItemsHTML = items.map(it => `
+        <tr>
+            <td>${it.desc || ""}</td>
+            <td>${it.qty || ""}</td>
+            <td>${it.unit_price || ""}</td>
+            <td>${it.total || ""}</td>
+        </tr>
+    `).join("");
+    document.getElementById("line_items").innerHTML = lineItemsHTML;
+
+    // PO Numbers (merge from invoice_metadata or fallback to RETRIEVE.matched_pos)
+    const pos = (inv.matched_pos && inv.matched_pos.length > 0) 
+        ? inv.matched_pos 
+        : (st.RETRIEVE?.matched_pos || []);
+
+    const poHTML = pos.map(po => `
+        <tr>
+            <td>${po.po_id || ""}</td>
+            <td>${po.amount || ""}</td>
+        </tr>
+    `).join("");
+    document.getElementById("po_numbers").innerHTML = poHTML;
+
+    // Attachments & Risk
+    const attachmentsHTML = `
+        <tr><th>Attachments</th><td>${(inv.attachments || []).join(", ")}</td></tr>
+        <tr><th>Risk Score</th><td>${riskScore !== undefined ? riskScore : "N/A"}</td></tr>
+    `;
+    document.getElementById("attachments_risk").innerHTML = attachmentsHTML;
+}
+
+async function submitDecision(decision) {
+    const urlParams = new URLSearchParams(window.location.search);
+    const checkpoint_id = urlParams.get("checkpoint_id");
+
+    const resp = await fetch("/human-review/decision", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            checkpoint_id,
+            decision,
+            reviewer_id: "Reviewer1",
+            notes: ""
+        })
+    });
+
+    const data = await resp.json();
+    alert("Decision submitted: " + decision);
+}
+
+loadData();
+</script>
 </body>
 </html>

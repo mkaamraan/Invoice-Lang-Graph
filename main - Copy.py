@@ -31,7 +31,7 @@ with open("workflow.json") as f:
 app = FastAPI()
 init_db()
 
-# Mount UI
+# Mount UI static files
 app.mount("/ui", StaticFiles(directory="ui"), name="ui")
 
 # Initialize tool clients
@@ -42,44 +42,27 @@ TOOLS = {"common": common_client, "atlas": atlas_client}
 
 def execute_workflow(input_invoice: dict):
     state = {"input_invoice": input_invoice, "logs": [], "status": "RUNNING", "paused": False}
-
+    
     # Workflow nodes
     state = run_intake(state, TOOLS)
     state = run_understand(state, TOOLS)
     state = run_prepare(state, TOOLS)
     state = run_retrieve(state, TOOLS)
     state = run_match(state, TOOLS, match_threshold=WORKFLOW["config"]["match_threshold"])
-
-    # Add complete invoice details inside checkpoint for HITL UI
+    
+    # HITL checkpoint
     state = run_checkpoint(state, TOOLS)
-    if "CHECKPOINT_HITL" in state:
-        # Start with input invoice
-        invoice_meta = input_invoice.copy()
-
-        # Add retrieved POs and GRNs
-        invoice_meta["matched_pos"] = state.get("RETRIEVE", {}).get("matched_pos", [])
-        invoice_meta["matched_grns"] = state.get("RETRIEVE", {}).get("matched_grns", [])
-
-        # Add parsed line items if missing
-        if "line_items" not in invoice_meta and "parsed_invoice" in state.get("UNDERSTAND", {}):
-            invoice_meta["line_items"] = state["UNDERSTAND"]["parsed_invoice"].get("parsed_line_items", [])
-
-        # Include risk score and flags if available
-        invoice_meta["risk_score"] = state.get("PREPARE", {}).get("flags", {}).get("risk_score")
-
-        # Assign to checkpoint
-        state["CHECKPOINT_HITL"]["invoice_metadata"] = invoice_meta
-
+    
     if state.get("paused"):
         checkpoint_id = state["CHECKPOINT_HITL"]["checkpoint_id"]
         url = f"http://127.0.0.1:8000/ui/reviewer.html?checkpoint_id={checkpoint_id}"
         logger.info(f"HITL required! Visit: {url}")
+        # Auto-open the reviewer UI in browser for demo purposes
         webbrowser.open(url)
-
         state["status"] = "PAUSED"
         return state
 
-    # Resume workflow if no pause
+    # Resume remaining workflow if no HITL pause
     state = run_reconcile(state, TOOLS)
     state = run_approve(state, TOOLS)
     state = run_posting(state, TOOLS)
@@ -89,7 +72,7 @@ def execute_workflow(input_invoice: dict):
     return state
 
 
-# Request Models
+# Request models
 class StartRequest(BaseModel):
     input_invoice: dict
 
@@ -101,7 +84,7 @@ class DecisionRequest(BaseModel):
     reviewer_id: str
 
 
-# Start Workflow
+# API endpoints
 @app.post("/start-workflow")
 def start_workflow(req: StartRequest):
     logger.info("Start workflow called")
@@ -109,39 +92,25 @@ def start_workflow(req: StartRequest):
     return state
 
 
-# Human Review Pending List
 @app.get("/human-review/pending")
 def list_pending():
     items = get_pending_checkpoints()
     res = []
-
     for it in items:
         st = it["state"]
         inv = st.get("input_invoice", {})
-
-        # Include full invoice for UI
-        full_invoice = st.get("CHECKPOINT_HITL", {}).get("invoice_metadata", inv)
-
         res.append({
             "checkpoint_id": it["checkpoint_id"],
-            "invoice_id": full_invoice.get("invoice_id"),
-            "vendor_name": full_invoice.get("vendor_name"),
-            "amount": full_invoice.get("amount"),
-            "currency": full_invoice.get("currency"),
-            "invoice_date": full_invoice.get("invoice_date"),
-            "line_items": full_invoice.get("line_items", []),
-            "matched_pos": full_invoice.get("matched_pos", []),
-            "matched_grns": full_invoice.get("matched_grns", []),
+            "invoice_id": inv.get("invoice_id"),
+            "vendor_name": inv.get("vendor_name"),
+            "amount": inv.get("amount"),
             "created_at": it["created_at"],
             "reason_for_hold": st.get("CHECKPOINT_HITL", {}).get("paused_reason"),
-            "invoice_data": full_invoice,  # for UI
             "review_url": f"/ui/reviewer.html?checkpoint_id={it['checkpoint_id']}"
         })
-
     return {"items": res}
 
 
-# Human Decision
 @app.post("/human-review/decision")
 def decision(req: DecisionRequest):
     cp = get_checkpoint(req.checkpoint_id)
@@ -149,50 +118,22 @@ def decision(req: DecisionRequest):
         raise HTTPException(status_code=404, detail="checkpoint not found")
     if cp["status"] != "PAUSED":
         raise HTTPException(status_code=400, detail="checkpoint not in PAUSED state")
-
+    
     state, status = apply_human_decision(req.checkpoint_id, req.decision, req.notes or "", req.reviewer_id)
     if status != "ok":
         raise HTTPException(status_code=500, detail="failed to apply decision")
-
-    # Include full invoice metadata for UI
-    if "CHECKPOINT_HITL" in state:
-        state["invoice_metadata"] = state["CHECKPOINT_HITL"].get("invoice_metadata")
-
+    
     if req.decision.upper() == "ACCEPT":
+        # Resume workflow after human approval
         state = run_reconcile(state, TOOLS)
         state = run_approve(state, TOOLS)
         state = run_posting(state, TOOLS)
         state = run_notify(state, TOOLS)
         state = run_complete(state, TOOLS)
-
-        return {
-            "resume_token": cp["resume_token"],
-            "next_stage": "RECONCILE",
-            "final_state": state
-        }
-
+        return {"resume_token": cp["resume_token"], "next_stage": "RECONCILE", "final_state": state}
     else:
         state["status"] = "MANUAL_HANDOFF"
-        return {
-            "resume_token": None,
-            "next_stage": None,
-            "final_state": state
-        }
-
-
-# Fetch full checkpoint (invoice + match + metadata) for reviewer UI
-@app.get("/api/checkpoint/{checkpoint_id}")
-def get_checkpoint_data(checkpoint_id: str):
-    cp = get_checkpoint(checkpoint_id)
-    if not cp:
-        raise HTTPException(status_code=404, detail="checkpoint not found")
-
-    return {
-        "checkpoint_id": checkpoint_id,
-        "created_at": cp["created_at"],
-        "status": cp["status"],
-        "state": cp["state"]  # contains input_invoice, match, parsed OCR, metadata
-    }
+        return {"resume_token": None, "next_stage": None, "final_state": state}
 
 
 if __name__ == "__main__":
